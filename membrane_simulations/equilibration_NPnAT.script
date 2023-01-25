@@ -1,0 +1,142 @@
+#DPD simulation for DOPC membrane (four-to-one mapping) 5-beads tail
+units		lj
+atom_style	molecular
+boundary	p p p
+
+#Geometry (read from preequilibrium zero tension membrane)
+read_data	DOPCt5_membrane_zerot_eqm.config
+lattice		fcc 3.0
+region		box block EDGE EDGE EDGE EDGE EDGE EDGE units box
+region		water block EDGE EDGE EDGE EDGE EDGE EDGE units box
+
+#Group definition
+group		DOPC type 1 2 3 4 5
+group		head type 1 2
+group		tail type 4 5
+group		glycerol type 3
+group		Q0 type 1
+group		Qa type 2
+group		Na type 3
+group		C type 4 5
+group		C2 type 5
+group		W type 6
+
+group		dump type 1 2 3 4 5
+
+#Force field setup
+mass		* 1.0
+pair_style	dpd 1.0 1.0 611
+pair_coeff      * * 25 4.5 1.0
+
+pair_coeff      1 1*2 25 4.5 1.0
+pair_coeff      1 3 25 4.5 1.0
+pair_coeff      1 4*5 100 4.5 1.0
+pair_coeff      1 6 25 4.5 1.0
+
+pair_coeff      2 2 25 4.5 1.0
+pair_coeff      2 3 25 4.5 1.0
+pair_coeff      2 4*5 100 4.5 1.0
+pair_coeff      2 6 25 4.5 1.0
+
+pair_coeff      3 3 25 4.5 1.0
+pair_coeff      3 4*5 35 4.5 1.0
+pair_coeff      3 6 25 4.5 1.0
+
+pair_coeff      4 4*5 25 4.5 1.0
+pair_coeff      4 6 100 4.5 1.0
+
+pair_coeff      5 5 25 4.5 1.0
+pair_coeff      5 6 100 4.5 1.0
+
+pair_coeff      6 6 25 4.5 1.0
+
+#Bond potential
+bond_style      harmonic
+bond_coeff      * 128 0.5
+
+bond_coeff      1*5 128 0.5
+special_bonds   lj 0.0 1.0 1.0
+
+#Angle potential
+angle_style     harmonic
+angle_coeff     * 10 180
+
+angle_coeff     1 10 120
+angle_coeff     2 10 180
+angle_coeff     3 10 180
+angle_coeff     4 10 180
+angle_coeff     5 18 120
+angle_coeff     6 10 180
+
+#Settings
+comm_modify	cutoff 3.0 vel yes
+neigh_modify	every 1 delay 0 check yes
+timestep	0.01
+
+#Diagnostics
+compute		bonddist all bond/local dist
+compute		maxbond all reduce max c_bonddist
+compute		avebond all reduce ave c_bonddist
+
+variable	tdens equal count(all)/vol
+print		"The system density is now ${tdens}"
+
+#Output
+thermo_style	custom step temp epair ebond eangle press c_avebond c_maxbond
+thermo_modify	flush yes norm no
+thermo		100
+
+#Relax to the desired apl
+variable	apl equal 1.51
+variable	L equal 24*sqrt(v_apl)
+fix		1 all deform 1 x final 0.0 ${L} y final 0.0 ${L} units box
+fix		2 all nve
+fix		press all press/berendsen z 23.7 23.7 10
+fix		com1 DOPC momentum 1 linear 1 1 1
+fix		com2 W momentum 1 linear 1 1 1
+dump		1 dump custom 4000 relaxmem.lammpstrj id type mol x y z
+dump_modify	1 flush yes
+dump		2 all custom 40000 relaxall.lammpstrj id type mol x y z
+dump_modify	2 flush yes
+
+run		40000
+unfix		1
+undump		1
+undump		2
+
+#Equilibrium (constant normal pressure)
+reset_timestep	0
+
+compute		zbin all chunk/atom bin/1d z 12 0.1 bound z 4 20 units box
+compute		spatom all stress/atom NULL
+variable	tpatom atom 0.5*(c_spatom[1]+c_spatom[2])-c_spatom[3]
+variable	tension equal lz*(c_thermo_press[3]-0.5*(c_thermo_press[1]+c_thermo_press[2]))
+variable	apl equal lx*ly/1152*2
+fix		dens1 Q0 ave/chunk 100 10000 1500000 zbin density/number file dens_Q0.dat
+fix		dens2 Qa ave/chunk 100 10000 1500000 zbin density/number file dens_Qa.dat
+fix		dens3 Na ave/chunk 100 10000 1500000 zbin density/number file dens_Na.dat
+fix		dens4 C ave/chunk 100 10000 1500000 zbin density/number file dens_C.dat
+fix		dens5 W ave/chunk 100 10000 1500000 zbin density/number file dens_W.dat
+fix		strsprofile all ave/chunk 100 10000 1500000 zbin v_tpatom c_spatom[1] c_spatom[2] c_spatom[3] norm none file strsprofile.dat 
+fix		tension_apl all ave/time 100 1 100 v_tension v_apl file tension_apl.dat
+
+compute		msdW W msd
+fix		msdW all ave/time 100 1 100 c_msdW[1] c_msdW[2] c_msdW[3] c_msdW[4] file msdW.dat
+compute		cmol all chunk/atom molecule
+compute		cmsdLP all msd/chunk cmol
+variable	msdLPx equal ave(c_cmsdLP[1])
+variable	msdLPy equal ave(c_cmsdLP[2])
+variable	msdLPz equal ave(c_cmsdLP[3])
+variable	msdLP equal ave(c_cmsdLP[4])
+fix		msdLP all ave/time 100 1 100 v_msdLPx v_msdLPy v_msdLPz v_msdLP file msdLP.dat
+
+dump		3 dump custom 15000 mem.lammpstrj id type mol x y z
+dump_modify	3 flush yes
+dump		4 all custom 150000 all.lammpstrj id type mol x y z
+dump_modify	4 flush yes
+thermo_style	custom step temp epair ebond eangle press c_avebond c_maxbond v_tension v_apl lx ly lz
+thermo_modify	flush yes norm no
+thermo		100
+run		1500000
+restart		10000 restart.1 restart.2
+write_data	DOPCt5_membrane_a${apl}_eqm.config

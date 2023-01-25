@@ -1,0 +1,132 @@
+#Equilibration of large membrane for interaction with nanoplastics
+#DPD simulation for DOPC membrane (four-to-one mapping) 5-beads tail
+units		lj
+atom_style	molecular
+boundary	p p p
+
+#Geometry (read in initial configuration)
+read_data       DOPCt5_membrane_solvent_a1.6_N4608.iconfig
+lattice         fcc 3.0
+region          box block EDGE EDGE EDGE EDGE EDGE EDGE units box
+region          water block EDGE EDGE EDGE EDGE EDGE EDGE units box
+
+#Group definition
+group		DOPC type 1 2 3 4 5
+group		head type 1 2
+group		tail type 4 5
+group		glycerol type 3
+group		Q0 type 1
+group		Qa type 2
+group		Na type 3
+group		C type 4 5
+group		W type 6
+
+group		dump type 1 2 3 4 5
+
+#Force field setup
+mass		* 1.0
+pair_style	dpd 1.0 1.0 71
+pair_coeff	* * 25 4.5 1.0
+
+pair_coeff	1 1*2 25 4.5 1.0
+pair_coeff	1 3 25 4.5 1.0
+pair_coeff	1 4*5 100 4.5 1.0
+pair_coeff	1 6 25 4.5 1.0
+
+pair_coeff	2 2 25 4.5 1.0
+pair_coeff	2 3 25 4.5 1.0
+pair_coeff	2 4*5 100 4.5 1.0
+pair_coeff	2 6 25 4.5 1.0
+
+pair_coeff	3 3 25 4.5 1.0
+pair_coeff	3 4*5 35 4.5 1.0
+pair_coeff	3 6 25 4.5 1.0
+
+pair_coeff	4 4*5 25 4.5 1.0
+pair_coeff	4 6 100 4.5 1.0
+
+pair_coeff	5 5 25 4.5 1.0
+pair_coeff	5 6 100 4.5 1.0
+
+pair_coeff	6 6 25 4.5 1.0
+
+#Bond potential
+bond_style	harmonic
+bond_coeff	* 128 0.5
+
+bond_coeff	1*5 128 0.5
+special_bonds	lj 0.0 1.0 1.0
+
+#Angle potential
+angle_style	harmonic
+angle_coeff	* 10 180
+
+angle_coeff	1 10 120
+angle_coeff	2 10 180
+angle_coeff	3 10 180
+angle_coeff	4 10 180
+angle_coeff	5 18 120
+angle_coeff	6 10 180
+
+#Settings
+comm_modify	cutoff 3.0 vel yes
+neigh_modify	every 1 delay 0 check yes
+timestep	0.01
+
+#Diagnostics
+compute		bonddist all bond/local dist
+compute		maxbond all reduce max c_bonddist
+compute		avebond all reduce ave c_bonddist
+
+variable	tdens equal count(all)/vol
+print		"The system density is now ${tdens}"
+
+#Output
+thermo_style	custom step temp epair ebond eangle press c_avebond c_maxbond
+thermo_modify	flush yes norm no
+thermo		100
+
+#Equilibrium (constant normal pressure and surface tension)
+reset_timestep	0
+fix		1 all nve
+fix		com1 DOPC momentum 1 linear 1 1 1
+fix		com2 W momentum 1 linear 1 1 1	
+variable	delP equal 0.0
+variable	Px_y equal 23.7-v_delP
+fix		press all press/berendsen x ${Px_y} ${Px_y} 10 y ${Px_y} ${Px_y} 10 z 23.7 23.7 10 couple xy
+
+#Calculate MSD of lipids
+compute		lipidchunk DOPC chunk/atom molecule
+compute		msdchunk all msd/chunk lipidchunk
+compute		msd2 DOPC msd
+variable	msdxy equal ave(c_msdchunk[1]+c_msdchunk[2])
+variable	msdz equal ave(c_msdchunk[3])
+variable	msdxy2 equal c_msd2[1]+c_msd2[2]
+variable	msdz2 equal c_msd2[3]
+fix		msdout all ave/time 100 1 100 v_msdxy v_msdz v_msdxy2 v_msdz2 file DOPCmsd.dat
+compute		msdW W msd
+fix		msdWout all ave/time 100 1 100 c_msdW[*] file Wmsd.dat
+
+compute		zbin all chunk/atom bin/1d z 12 0.1 bound z 4 20 units box
+compute		spatom all stress/atom NULL
+variable	tpatom atom 0.5*(c_spatom[1]+c_spatom[2])-c_spatom[3]
+variable	tension equal lz*(c_thermo_press[3]-0.5*(c_thermo_press[1]+c_thermo_press[2]))
+variable	apl equal lx*ly/4608*2
+fix		dens1 Q0 ave/chunk 100 10000 1500000 zbin density/number file dens_Q0.dat
+fix		dens2 Qa ave/chunk 100 10000 1500000 zbin density/number file dens_Qa.dat
+fix		dens3 Na ave/chunk 100 10000 1500000 zbin density/number file dens_Na.dat
+fix		dens4 C ave/chunk 100 10000 1500000 zbin density/number file dens_C.dat
+fix		dens5 W ave/chunk 100 10000 1500000 zbin density/number file dens_W.dat
+fix		strsprofile all ave/chunk 100 10000 1500000 zbin v_tpatom c_spatom[1] c_spatom[2] c_spatom[3] norm none file strsprofile.dat 
+fix		tension_apl all ave/time 100 1 100 v_tension v_apl file tension_apl.dat
+
+dump		1 dump custom 50000 mem.lammpstrj id type mol x y z
+dump_modify	1 flush yes
+dump		4 all custom 150000 all.lammpstrj id type mol x y z
+dump_modify	4 flush yes
+thermo_style	custom step temp epair ebond eangle press c_avebond c_maxbond v_tension v_apl lx ly lz
+thermo_modify	flush yes norm no
+thermo		100
+restart		10000 restart.1 restart.2
+run		2000000
+write_data	DOPCt5_largemembrane_delP${delP}_2Msteps.config nocoeff
